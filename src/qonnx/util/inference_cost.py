@@ -45,32 +45,38 @@ from qonnx.transformation.infer_datatypes import InferDataTypes
 from qonnx.transformation.infer_shapes import InferShapes
 
 
-def compute_bops(inf_cost_dict):
+def compute_bops_and_macs(inf_cost_dict):
     total_bops = 0.0
+    total_macs = 0.0
     for k, v in inf_cost_dict.items():
         if k.startswith("op_mac"):
             comps = k.split("_")
             dt1 = DataType[comps[2]]
             dt2 = DataType[comps[3]]
             total_bops += dt1.bitwidth() * dt2.bitwidth() * v
-    return total_bops
+            total_macs += v
+    return total_bops, total_macs
 
 
-def compute_mem_bits(inf_cost_dict, filter_string="mem_w"):
+def compute_mem_bits_and_elems(inf_cost_dict, filter_string="mem_w"):
     total_mem_bits = 0.0
+    total_mem_elems = 0.0
     for k, v in inf_cost_dict.items():
         if k.startswith(filter_string):
             comps = k.split("_")
             dt = DataType[comps[2]]
             total_mem_bits += dt.bitwidth() * v
-    return total_mem_bits
+            total_mem_elems += v
+    return total_mem_bits, total_mem_elems
 
 
-def inference_cost(model_filename, *, output_json=None, output_onnx=None, preprocess=True, discount_sparsity=True):
+def inference_cost(
+    model_filename_or_wrapper, *, output_json=None, output_onnx=None, preprocess=True, discount_sparsity=True
+):
     """Return the inference cost estimate metric for given ONNX model.
     Supports the Quant op for weight/activation quantization.
 
-    :param model_filename: Filename for ONNX model
+    :param model_filename_or_wrapper: Filename or ModelWrapper for ONNX model
     :param output_json: Optional JSON filename to save the inference cost dict
     :param output_onnx: Optional ONNX filename to save the final model after any
         preprocessing
@@ -79,7 +85,10 @@ def inference_cost(model_filename, *, output_json=None, output_onnx=None, prepro
     :param discount_sparsity: If set, will discount op cost of MAC ops with a
         constant zero weight, and the mem cost of constant zero weights.
     """
-    model = ModelWrapper(model_filename)
+    if isinstance(model_filename_or_wrapper, ModelWrapper):
+        model = model_filename_or_wrapper
+    else:
+        model = ModelWrapper(model_filename_or_wrapper)
     if preprocess:
         qnt_nodes = model.get_nodes_by_op_type("Quant")
         for qnt_node in qnt_nodes:
@@ -96,12 +105,15 @@ def inference_cost(model_filename, *, output_json=None, output_onnx=None, prepro
     if output_onnx is not None:
         model.save(output_onnx)
     ret = model.analysis(lambda x: infca.inference_cost(x, discount_sparsity))
-    bops = compute_bops(ret)
-    mem_w_bits = compute_mem_bits(ret, "mem_w")
-    mem_o_bits = compute_mem_bits(ret, "mem_o")
+    bops, macs = compute_bops_and_macs(ret)
+    mem_w_bits, mem_w_elems = compute_mem_bits_and_elems(ret, "mem_w")
+    mem_o_bits, mem_o_elems = compute_mem_bits_and_elems(ret, "mem_o")
     ret["total_bops"] = bops
+    ret["total_macs"] = macs
     ret["total_mem_w_bits"] = mem_w_bits
+    ret["total_mem_w_elems"] = mem_w_elems
     ret["total_mem_o_bits"] = mem_o_bits
+    ret["total_mem_o_elems"] = mem_o_elems
 
     if "unsupported" in ret:
         ret["unsupported"] = str(ret["unsupported"])

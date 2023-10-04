@@ -29,47 +29,33 @@
 import clize
 
 from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.qcdq_to_qonnx import QCDQToQuant
-from qonnx.transformation.qonnx_to_qcdq import QuantToQCDQ
-
-CONVERT_MODE_QCDQ = "qcdq"
-CONVERT_MODE_QUANT = "quant"
-
-convert_modes = {CONVERT_MODE_QCDQ, CONVERT_MODE_QUANT}
-
-convert_mode_options = clize.parameters.mapped(
-    [
-        (CONVERT_MODE_QCDQ, [CONVERT_MODE_QCDQ], "Convert from Quant to QCDQ"),
-        (CONVERT_MODE_QUANT, [CONVERT_MODE_QUANT], "Convert from QCDQ to Quant"),
-    ]
-)
+from qonnx.transformation.pruning import PruneChannels
 
 
-def convert(input_model_file, *, output_style: convert_mode_options, output_file: str = None):
-    """Convert an ONNX file from one style of quantization to another, where possible.
-    Please see the documentation on the QuantToQCDQ and QCDQToQuant
-    transformations to learn more about the particular limitations.
-
-    :param input_model_file: Filename for the input ONNX model.
-    :param output_style: Quantization style for the output.
-    :param output_file: If specified, write the output ONNX model to this filename.
-        Otherwise, will default to the input file with an _output_style suffix.
+def prune_channels(input_filename, prunespec_filename, *, lossy=True, output_filename=""):
     """
-    model = ModelWrapper(input_model_file)
-    if output_style == CONVERT_MODE_QCDQ:
-        model = model.transform(QuantToQCDQ())
-    elif output_style == CONVERT_MODE_QUANT:
-        model = model.transform(QCDQToQuant())
-    else:
-        print("Unknown output_style for conversion: %s" % output_style)
-        exit(-1)
-    if output_file is None:
-        output_file = input_model_file.replace(".onnx", "_%s.onnx" % output_style)
-    model.save(output_file)
+    Prune channels from specified tensors and their dependencies from a model.
+    The model must have already been cleaned up by qonnx-cleanup, including the
+    --extract-conv-bias=True --preserve-qnt-ops=False options.
+
+    :param input_filename: Filename for the input ONNX model
+    :param prunespec_filename: Filename for the pruning specification, formatted as a Python dict
+        formatted as {tensor_name : {axis : {channels}}}. See test_pruning.py for examples.
+    :param lossy: Whether to perform lossy pruning, see the PruneChannels transformation for description.
+    :param output_filename: If specified, write the resulting pruned model to this filename. Otherwise,
+        the input_filename will be used with a _pruned suffix.
+    """
+    model = ModelWrapper(input_filename)
+    with open(prunespec_filename) as f:
+        prunespec_dict = dict(eval(f.read()))
+    pruned_model = model.transform(PruneChannels(prunespec_dict, lossy))
+    if output_filename == "":
+        output_filename = input_filename.replace(".onnx", "_pruned.onnx")
+    pruned_model.save(output_filename)
 
 
 def main():
-    clize.run(convert)
+    clize.run(prune_channels)
 
 
 if __name__ == "__main__":
