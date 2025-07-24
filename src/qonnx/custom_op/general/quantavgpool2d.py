@@ -93,6 +93,7 @@ class QuantAvgPool2d(CustomOp):
         model.set_tensor_datatype(node.output[0], dtype)
 
     def get_accum_size(self):
+        # Calculate the maximum bit width of the accumulator
         ibits = self.get_nodeattr("ibits")
         k = self.get_nodeattr("kernel")
         max_value = 2**ibits - 1
@@ -101,12 +102,19 @@ class QuantAvgPool2d(CustomOp):
         return max_bit_width
 
     def get_shifts(self):
-        shift_bits = self.get_accum_size() - self.get_nodeattr("obits")
+        # Calculate the number of bits to shift based on input and output bit widths
+        # In the worst case, every element of the input vector contains the largest value fitting
+        # the input bit size i.e. 2**ibits-1. Therefore the accumulator will contain the value
+        # (2**ibits-1)*k*k, where k is the kernel size. After the division mandated in the AvgNode
+        # by k*k, the largest value that can be present is (2**ibits-1), which then needs to be
+        # shifted to fit into the output type.
+        shift_bits = self.get_nodeattr("ibits") - self.get_nodeattr("obits")
         shift_bits = shift_bits if shift_bits >= 0 else 0
         return shift_bits
 
     def execute_node(self, context, graph):
         # create a standard average pooling node to help calculate the result
+        # Implements: \sum_{i=0}^{k}(\sum_{j=0}^{k} x_{i,j}) / (k*k) >> (ibits - obits)
         node = self.onnx_node
         k = self.get_nodeattr("kernel")
         s = self.get_nodeattr("stride")
@@ -139,9 +147,7 @@ class QuantAvgPool2d(CustomOp):
         idict = {node.input[0]: inp_values}
         sess = rt.InferenceSession(model_avgpool.SerializeToString())
         result_temp = sess.run(None, idict)
-        # remove scaling introduced by average
-        result_temp = np.round(result_temp[0] * (k * k))
-        result = np.right_shift(result_temp.astype(int), self.get_shifts())
+        result = np.right_shift(result_temp[0].astype(int), self.get_shifts())
         if self.get_nodeattr("data_layout") == "NHWC":
             result = result.transpose(0, 2, 3, 1)
         context[node.output[0]] = result.astype(np.float32)
